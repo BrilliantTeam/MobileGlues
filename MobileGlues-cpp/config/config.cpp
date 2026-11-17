@@ -46,7 +46,13 @@ int check_path() {
     }
     config_file_path = concatenate(mg_directory_path, "/config.json");
     log_file_path = concatenate(mg_directory_path, "/latest.log");
-    glsl_cache_file_path = concatenate(mg_directory_path, "/glsl_cache.tmp");
+    char* stale_cache = concatenate(mg_directory_path, "/glsl_cache.tmp");
+    remove(stale_cache);
+    delete[] stale_cache;
+    stale_cache = concatenate(mg_directory_path, "/glsl_cache_b1.tmp");
+    remove(stale_cache);
+    delete[] stale_cache;
+    glsl_cache_file_path = concatenate(mg_directory_path, "/glsl_cache_b2.tmp");
     stats_file_path = concatenate(mg_directory_path, "/stats.json");
 
     if (mkdir(mg_directory_path, 0755) != 0 && errno != EEXIST) {

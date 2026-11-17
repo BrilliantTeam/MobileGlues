@@ -19,6 +19,8 @@
 #include <strstream>
 #include <algorithm>
 #include <sstream>
+#include <tuple>
+#include <vector>
 #include "cache.h"
 #include "../../version.h"
 
@@ -247,9 +249,12 @@ std::string process_uniform_declarations(const std::string& glslCode) {
     const std::vector<std::string> precision_kws = {"highp", "lowp", "mediump"};
 
     result.reserve(glslCode.length());
+    const auto is_ident = [&](size_t i) {
+        return i < length && (std::isalnum(static_cast<unsigned char>(glslCode[i])) || glslCode[i] == '_');
+    };
 
     while (scan_pos < length) {
-        if (glslCode.compare(scan_pos, 7, "uniform") == 0) {
+        if (glslCode.compare(scan_pos, 7, "uniform") == 0 && (scan_pos == 0 || !is_ident(scan_pos - 1)) && !is_ident(scan_pos + 7)) {
             if (scan_pos > chunk_start) {
                 result.append(glslCode, chunk_start, scan_pos - chunk_start);
             }
@@ -344,6 +349,36 @@ std::string processOutColorLocations(const std::string& glslCode) {
     const static std::regex pattern(R"(\n(out highp vec4 outColor)(\d+);)");
     const std::string replacement = "\nlayout(location=$2) $1$2;";
     return std::regex_replace(glslCode, pattern, replacement);
+}
+
+std::string constantFragOutputIndex(const std::string& essl) {
+    static const std::regex declRegex(R"(\bout\s+(?:(lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*\[\s*(\d+)\s*\]\s*;)");
+    std::string result = essl;
+    std::string copies;
+    std::smatch match;
+    std::string::const_iterator searchStart = essl.cbegin();
+    std::vector<std::tuple<std::string, std::string, std::string, int>> outputs;
+    while (std::regex_search(searchStart, essl.cend(), match, declRegex)) {
+        outputs.emplace_back(match[1].str(), match[2].str(), match[3].str(), std::stoi(match[4].str()));
+        searchStart = match.suffix().first;
+    }
+    for (auto& [precision, type, name, size] : outputs) {
+        const std::regex dynamicIndex("\\b" + name + R"(\s*\[\s*(?!\d+\s*\]))");
+        size_t declEnd = result.find(';', result.find(name + "[")) + 1;
+        if (!std::regex_search(result.cbegin() + (long)declEnd, result.cend(), dynamicIndex)) continue;
+        std::string shadow = name + "_mg";
+        std::string body = std::regex_replace(result.substr(declEnd), std::regex("\\b" + name + "\\b"), shadow);
+        std::string shadowDecl = "\n" + (precision.empty() ? "" : precision + " ") + type + " " + shadow + "[" +
+                                 std::to_string(size) + "];";
+        result = result.substr(0, declEnd) + shadowDecl + body;
+        for (int i = 0; i < size; i++) {
+            copies += "    " + name + "[" + std::to_string(i) + "] = " + shadow + "[" + std::to_string(i) + "];\n";
+        }
+    }
+    if (copies.empty()) return essl;
+    static const std::regex mainRegex(R"(\bvoid\s+main\s*\(\s*\))");
+    result = std::regex_replace(result, mainRegex, "void mg_main_inner()");
+    return result + "\nvoid main()\n{\n    mg_main_inner();\n" + copies + "}\n";
 }
 
 std::string GLSLtoGLSLES(const char* glsl_code, GLenum glsl_type, uint essl_version, uint glsl_version,
@@ -869,6 +904,9 @@ std::string GLSLtoGLSLES_2(const char* glsl_code, GLenum glsl_type, uint essl_ve
     }
     essl = processOutColorLocations(essl);
     essl = forceSupporterOutput(essl);
+    if (glsl_type == GL_FRAGMENT_SHADER) {
+        essl = constantFragOutputIndex(essl);
+    }
 
     LOG_D("Originally GLSL to GLSL ES Complete: \n%s", essl.c_str())
     return_code = errc;
